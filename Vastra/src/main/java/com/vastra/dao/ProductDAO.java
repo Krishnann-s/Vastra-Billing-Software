@@ -105,6 +105,20 @@ public class ProductDAO {
         return products;
     }
 
+    public static Product findBySku(String sku) throws SQLException {
+        if (sku == null || sku.isBlank()) return null;
+        String sql = "SELECT * FROM products WHERE sku = ?";
+        try (Connection c = DBUtil.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, sku);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                return extractProduct(rs);
+            }
+        }
+        return null;
+    }
+
     private static Product extractProduct(ResultSet rs) throws SQLException {
         Product p = new Product();
         p.setId(rs.getString("id"));

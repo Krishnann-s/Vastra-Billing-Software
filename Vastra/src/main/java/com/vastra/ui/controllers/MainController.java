@@ -6,6 +6,7 @@ import com.vastra.dao.SalesDAO;
 import com.vastra.model.CartItem;
 import com.vastra.model.Customer;
 import com.vastra.model.Product;
+import com.vastra.util.BarcodeUtil;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleStringProperty;
@@ -13,15 +14,25 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
+import javafx.print.PageLayout;
+import javafx.print.PrinterJob;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Text;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public class MainController {
-    @FXML private TextField scanField;
+    @FXML private TextField txtProductSearch;    // replaced scanField
     @FXML private TableView<CartItem> cartTable;
     @FXML private TableColumn<CartItem, String> nameColumn;
     @FXML private TableColumn<CartItem, Integer> qtyColumn;
@@ -33,6 +44,7 @@ public class MainController {
     @FXML private Label customerNameLabel;
     @FXML private Label customerPointsLabel;
     @FXML private TextField discountField;
+    @FXML private Button btnPrintBarcodes;      // aligned with FXML fx:id
 
     private ObservableList<CartItem> cartItems = FXCollections.observableArrayList();
     private Customer currentCustomer = null;
@@ -40,8 +52,13 @@ public class MainController {
     @FXML
     public void initialize(){
         setupCartTable();
-        scanField.requestFocus();
-        scanField.setOnAction(e -> handleBarcodeScan());
+
+        // Use product search textbox instead of scan field
+        if (txtProductSearch != null) {
+            txtProductSearch.requestFocus();
+            txtProductSearch.setOnAction(e -> handleProductSearch());
+        }
+
         if (discountField != null) {
             discountField.setText("0");
         }
@@ -63,30 +80,40 @@ public class MainController {
         cartTable.setItems(cartItems);
     }
 
-    private void handleBarcodeScan() {
-        String code = scanField.getText().trim();
+    /**
+     * Handles product search / manual barcode entry. The user types SKU / id and presses Enter.
+     */
+    private void handleProductSearch() {
+        if (txtProductSearch == null) return;
+        String code = txtProductSearch.getText().trim();
         if (code.isEmpty()) return;
 
         try {
+            // Try to find product by ID or SKU. Replace with your DAO lookup method if different.
             Product product = ProductDAO.findById(code);
             if (product == null) {
+                // Optionally try search by SKU or name - you can add more lookup attempts here
+                product = ProductDAO.findBySku(code); // if you have this method; otherwise skip
+            }
+
+            if (product == null) {
                 showError("Product not found: " + code);
-                scanField.clear();
+                txtProductSearch.clear();
                 return;
             }
 
             if (product.getStock() <= 0) {
                 showError("Product out of stock: " + product.getDisplayName());
-                scanField.clear();
+                txtProductSearch.clear();
                 return;
             }
 
             addToCart(product);
-            scanField.clear();
+            txtProductSearch.clear();
             updateTotals();
 
         } catch (Exception e) {
-            showError("Error scanning product: " + e.getMessage());
+            showError("Error searching product: " + e.getMessage());
         }
     }
 
@@ -279,7 +306,7 @@ public class MainController {
         if (customerPointsLabel != null) customerPointsLabel.setText("0 points");
         if (discountField != null) discountField.setText("0");
         updateTotals();
-        scanField.requestFocus();
+        if (txtProductSearch != null) txtProductSearch.requestFocus();
     }
 
     // Stub methods for buttons that don't have handlers yet
@@ -318,4 +345,98 @@ public class MainController {
         alert.setHeaderText(null);
         alert.showAndWait();
     }
+
+    @FXML
+    private void onPrintBarcodes() {
+        List<Product> products;
+        try {
+            products = ProductDAO.getAllProducts();
+        } catch (Exception e) {
+            e.printStackTrace();
+            showError("Failed to load products for barcode print: " + e.getMessage());
+            return;
+        }
+
+        if (products == null || products.isEmpty()) {
+            // show alert or notification
+            System.out.println("No products to print.");
+            return;
+        }
+
+        // 2. Create printable pages (grid of barcode labels)
+        int labelsPerRow = 3;
+        int labelsPerCol = 4;
+        int labelsPerPage = labelsPerRow * labelsPerCol;
+
+        List<Node> pages = new ArrayList<>();
+        int index = 0;
+        while (index < products.size()) {
+            GridPane pageGrid = new GridPane();
+            pageGrid.setHgap(10);
+            pageGrid.setVgap(10);
+            pageGrid.setPadding(new javafx.geometry.Insets(20));
+
+            for (int r = 0; r < labelsPerCol; r++) {
+                for (int c = 0; c < labelsPerRow; c++) {
+                    if (index >= products.size()) break;
+                    Product p = products.get(index++);
+
+                    // Create a small VBox label: product name + barcode image + sku/price if desired
+                    VBox labelBox = new VBox(4);
+                    labelBox.setPrefWidth(180); // tweak to fit label size
+                    labelBox.setPrefHeight(100);
+                    Text name = new Text(p.getName());
+                    name.setWrappingWidth(160);
+
+                    // Generate barcode image: use SKU or product id
+                    String code = p.getSku() != null ? p.getSku() : String.valueOf(p.getId());
+                    Image barcodeImage = BarcodeUtil.generateBarcodeImage(code, 300, 80);
+                    ImageView iv = new ImageView(barcodeImage);
+                    iv.setPreserveRatio(true);
+                    iv.setFitWidth(160); // adjust for printable label width
+
+                    Text skuText = new Text(code);
+
+                    labelBox.getChildren().addAll(name, iv, skuText);
+                    pageGrid.add(labelBox, c, r);
+                }
+            }
+            pages.add(pageGrid);
+        }
+
+        // 3. Print pages using PrinterJob
+        PrinterJob job = PrinterJob.createPrinterJob();
+        if (job == null) {
+            System.out.println("No printers available.");
+            return;
+        }
+
+        // Optionally show print dialog to choose printer and settings
+        Window window = btnPrintBarcodes.getScene().getWindow();
+        boolean proceed = job.showPrintDialog(window);
+        if (!proceed) {
+            job.endJob();
+            return;
+        }
+
+        PageLayout pageLayout = job.getJobSettings().getPageLayout();
+        for (Node pageNode : pages) {
+            // Optionally scale node to page printable width
+            double scaleX = pageLayout.getPrintableWidth() / pageNode.prefWidth(-1);
+            double scaleY = pageLayout.getPrintableHeight() / pageNode.prefHeight(-1);
+            double scale = Math.min(scaleX, scaleY);
+            pageNode.setScaleX(scale);
+            pageNode.setScaleY(scale);
+
+            boolean printed = job.printPage(pageNode);
+            pageNode.setScaleX(1);
+            pageNode.setScaleY(1);
+            if (!printed) {
+                System.out.println("Failed to print one page.");
+                break;
+            }
+        }
+        job.endJob();
+    }
+
 }

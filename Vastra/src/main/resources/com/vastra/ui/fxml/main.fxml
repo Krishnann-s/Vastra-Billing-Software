@@ -21,7 +21,11 @@
                 <Insets top="10" right="10" bottom="10" left="10"/>
             </padding>
 
-            <TextField fx:id="scanField" promptText="Scan barcode here" prefHeight="40"/>
+            <HBox spacing="8" alignment="CENTER_LEFT">
+                <!-- Optional: keep a small search field instead of the big scan field -->
+                <TextField fx:id="txtProductSearch" promptText="Search product by name or SKU" />
+                <Button fx:id="btnPrintBarcodes" text="Print Barcodes" onAction="#onPrintBarcodes"/>
+            </HBox>
 
             <HBox spacing="10">
                 <VBox spacing="5">

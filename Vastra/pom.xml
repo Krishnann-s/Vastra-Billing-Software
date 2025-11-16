@@ -55,6 +55,12 @@
       <version>3.5.1</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-swing</artifactId>
+      <version>21.0.2</version> <!-- or your JavaFX version -->
+    </dependency>
+
     <!-- Apache POI (for Excel import/export later) -->
     <dependency>
       <groupId>org.apache.poi</groupId>
