@@ -11,7 +11,6 @@ public class ProductDAO {
 
     public static void insertProduct(String prod_id, String prod_name, String variant,
                                      int mrp, int sellPrice, int gst, int stock) throws Exception {
-
         String sql = """
             INSERT INTO products(id, name, variant, mrp_cents, sell_price_cents, gst_percent, stock, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -31,14 +30,13 @@ public class ProductDAO {
 
     public static Product findById(String id) throws SQLException {
         String sql = "SELECT * FROM products WHERE id = ?";
-        try (
-            Connection c = DBUtil.getConnection();
-            PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setString(1, id);
-                ResultSet rs = ps.executeQuery();
-                if(rs.next()) {
-                    return extractProduct(rs);
-                }
+        try (Connection c = DBUtil.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, id);
+            ResultSet rs = ps.executeQuery();
+            if(rs.next()) {
+                return extractProduct(rs);
+            }
         }
         return null;
     }
@@ -112,12 +110,46 @@ public class ProductDAO {
         p.setId(rs.getString("id"));
         p.setName(rs.getString("name"));
         p.setVariant(rs.getString("variant"));
+
+        // Handle new fields with null checks
+        String category = rs.getString("category");
+        p.setCategory(category != null ? category : "");
+
+        String brand = rs.getString("brand");
+        p.setBrand(brand != null ? brand : "");
+
+        String barcode = rs.getString("barcode");
+        p.setBarcode(barcode != null ? barcode : "");
+
+        String sku = rs.getString("sku");
+        p.setSku(sku != null ? sku : "");
+
         p.setMrpCents(rs.getInt("mrp_cents"));
         p.setSellPriceCents(rs.getInt("sell_price_cents"));
+        p.setPurchasePriceCents(rs.getInt("purchase_price_cents"));
         p.setGstPercent(rs.getInt("gst_percent"));
+
+        String hsnCode = rs.getString("hsn_code");
+        p.setHsnCode(hsnCode != null ? hsnCode : "");
+
         p.setStock(rs.getInt("stock"));
         p.setReorderThreshold(rs.getInt("reorder_threshold"));
+
+        String unit = rs.getString("unit");
+        p.setUnit(unit != null ? unit : "PCS");
+
+        String description = rs.getString("description");
+        p.setDescription(description != null ? description : "");
+
+        String imagePath = rs.getString("image_path");
+        p.setImagePath(imagePath != null ? imagePath : "");
+
+        p.setActive(rs.getInt("is_active") == 1);
         p.setCreatedAt(rs.getString("created_at"));
+
+        String updatedAt = rs.getString("updated_at");
+        p.setUpdatedAt(updatedAt != null ? updatedAt : "");
+
         return p;
     }
 }

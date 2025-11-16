@@ -14,19 +14,15 @@ import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Scene;
-import javafx.scene.control.Label;
-import javafx.scene.control.TableView;
-import javafx.scene.control.TextField;
-import javafx.stage.Stage;
 import javafx.scene.control.*;
+import javafx.stage.Stage;
 
 import java.util.ArrayList;
 import java.util.Optional;
 
-
 public class MainController {
     @FXML private TextField scanField;
-    @FXML private TableView<?> cartTable;
+    @FXML private TableView<CartItem> cartTable;
     @FXML private TableColumn<CartItem, String> nameColumn;
     @FXML private TableColumn<CartItem, Integer> qtyColumn;
     @FXML private TableColumn<CartItem, Double> priceColumn;
@@ -46,7 +42,9 @@ public class MainController {
         setupCartTable();
         scanField.requestFocus();
         scanField.setOnAction(e -> handleBarcodeScan());
-        discountField.setText("0");
+        if (discountField != null) {
+            discountField.setText("0");
+        }
     }
 
     private void setupCartTable() {
@@ -92,8 +90,7 @@ public class MainController {
         }
     }
 
-    @FXML
-    public void addToCart() {
+    private void addToCart(Product product) {
         // Check if product already in cart
         for (CartItem item : cartItems) {
             if (item.getProduct().getId().equals(product.getId())) {
@@ -122,16 +119,18 @@ public class MainController {
 
         double discount = 0;
         try {
-            discount = Double.parseDouble(discountField.getText());
+            if (discountField != null && !discountField.getText().isEmpty()) {
+                discount = Double.parseDouble(discountField.getText());
+            }
         } catch (NumberFormatException e) {
             discount = 0;
         }
 
         double total = subtotal - discount;
 
-        subtotalLabel.setText(String.format("₹%.2f", subtotal));
-        taxLabel.setText(String.format("₹%.2f", tax));
-        totalLabel.setText(String.format("₹%.2f", total));
+        if (subtotalLabel != null) subtotalLabel.setText(String.format("₹%.2f", subtotal));
+        if (taxLabel != null) taxLabel.setText(String.format("₹%.2f", tax));
+        if (totalLabel != null) totalLabel.setText(String.format("₹%.2f", total));
     }
 
     @FXML
@@ -146,6 +145,7 @@ public class MainController {
             stage.show();
         } catch (Exception e) {
             e.printStackTrace();
+            showError("Error opening product form: " + e.getMessage());
         }
     }
 
@@ -175,8 +175,8 @@ public class MainController {
 
                 if (customer != null) {
                     currentCustomer = customer;
-                    customerNameLabel.setText(customer.getName());
-                    customerPointsLabel.setText(customer.getPoints() + " points");
+                    if (customerNameLabel != null) customerNameLabel.setText(customer.getName());
+                    if (customerPointsLabel != null) customerPointsLabel.setText(customer.getPoints() + " points");
                 }
 
             } catch (Exception e) {
@@ -214,8 +214,10 @@ public class MainController {
                     showError("Points must be in multiples of 100");
                     return;
                 }
-                discountField.setText(String.valueOf(points));
-                updateTotals();
+                if (discountField != null) {
+                    discountField.setText(String.valueOf(points));
+                    updateTotals();
+                }
             } catch (NumberFormatException e) {
                 showError("Invalid points value");
             }
@@ -237,7 +239,10 @@ public class MainController {
         if (!paymentResult.isPresent()) return;
 
         try {
-            int discountCents = (int) (Double.parseDouble(discountField.getText()) * 100);
+            int discountCents = 0;
+            if (discountField != null && !discountField.getText().isEmpty()) {
+                discountCents = (int) (Double.parseDouble(discountField.getText()) * 100);
+            }
             String customerId = currentCustomer != null ? currentCustomer.getId() : null;
 
             // Redeem points if used
@@ -258,6 +263,7 @@ public class MainController {
 
         } catch (Exception e) {
             showError("Error completing sale: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -269,18 +275,47 @@ public class MainController {
     private void clearCart() {
         cartItems.clear();
         currentCustomer = null;
-        customerNameLabel.setText("");
-        customerPointsLabel.setText("");
-        discountField.setText("0");
+        if (customerNameLabel != null) customerNameLabel.setText("Walk-in Customer");
+        if (customerPointsLabel != null) customerPointsLabel.setText("0 points");
+        if (discountField != null) discountField.setText("0");
         updateTotals();
         scanField.requestFocus();
     }
 
+    // Stub methods for buttons that don't have handlers yet
+    @FXML public void onBulkImport() { showInfo("Bulk Import - Coming Soon!"); }
+    @FXML public void onShowReports() { showInfo("Reports - Coming Soon!"); }
+    @FXML public void onShowLowStock() { showInfo("Low Stock - Coming Soon!"); }
+    @FXML public void onShowReturns() { showInfo("Returns - Coming Soon!"); }
+    @FXML public void onShowSettings() { showInfo("Settings - Coming Soon!"); }
+    @FXML public void onClearCustomer() {
+        currentCustomer = null;
+        if (customerNameLabel != null) customerNameLabel.setText("Walk-in Customer");
+        if (customerPointsLabel != null) customerPointsLabel.setText("0 points");
+    }
+    @FXML public void onAddItemManually() { showInfo("Add Item Manually - Coming Soon!"); }
+    @FXML public void onHoldSale() { showInfo("Hold Sale - Coming Soon!"); }
+    @FXML public void onPrintBill() { showInfo("Print Bill - Coming Soon!"); }
+    @FXML public void onEmailBill() { showInfo("Email Bill - Coming Soon!"); }
+
     private void showError(String msg) {
-        new Alert(Alert.AlertType.ERROR, msg).show();
+        Alert alert = new Alert(Alert.AlertType.ERROR, msg);
+        alert.setTitle("Error");
+        alert.setHeaderText(null);
+        alert.showAndWait();
     }
 
     private void showSuccess(String msg) {
-        new Alert(Alert.AlertType.INFORMATION, msg).show();
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, msg);
+        alert.setTitle("Success");
+        alert.setHeaderText(null);
+        alert.showAndWait();
+    }
+
+    private void showInfo(String msg) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, msg);
+        alert.setTitle("Information");
+        alert.setHeaderText(null);
+        alert.showAndWait();
     }
 }

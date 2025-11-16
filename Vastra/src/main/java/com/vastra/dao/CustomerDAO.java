@@ -84,9 +84,41 @@ public class CustomerDAO {
         c.setId(rs.getString("id"));
         c.setName(rs.getString("name"));
         c.setPhone(rs.getString("phone"));
-        c.setEmail(rs.getString("email"));
+
+        String email = rs.getString("email");
+        c.setEmail(email != null ? email : "");
+
+        String address = rs.getString("address");
+        c.setAddress(address != null ? address : "");
+
+        String city = rs.getString("city");
+        c.setCity(city != null ? city : "");
+
+        String pincode = rs.getString("pincode");
+        c.setPincode(pincode != null ? pincode : "");
+
+        String birthday = rs.getString("birthday");
+        c.setBirthday(birthday != null ? birthday : "");
+
+        String anniversary = rs.getString("anniversary");
+        c.setAnniversary(anniversary != null ? anniversary : "");
+
         c.setPoints(rs.getInt("points"));
+        c.setTotalPurchasesCents(rs.getInt("total_purchases_cents"));
+        c.setVisitCount(rs.getInt("visit_count"));
+
+        String tier = rs.getString("tier");
+        c.setTier(tier != null ? tier : "BRONZE");
+
+        String notes = rs.getString("notes");
+        c.setNotes(notes != null ? notes : "");
+
+        c.setActive(rs.getInt("is_active") == 1);
         c.setCreatedAt(rs.getString("created_at"));
+
+        String lastVisit = rs.getString("last_visit");
+        c.setLastVisit(lastVisit != null ? lastVisit : "");
+
         return c;
     }
 }

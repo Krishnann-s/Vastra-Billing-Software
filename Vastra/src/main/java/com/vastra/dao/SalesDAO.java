@@ -31,33 +31,36 @@ public class SalesDAO {
 
             int total = subtotal - discountCents;
 
-            // Insert sale record
+            // Generate invoice number
+            String invoiceNumber = "INV-" + System.currentTimeMillis();
             String saleId = UUID.randomUUID().toString();
             String timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 
+            // Insert sale record
             String saleSql = """
-                INSERT INTO sales(id, customer_id, ts, subtotal_cents, tax_cents, 
-                                  discount_cents, total_cents, payment_mode, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')
+                INSERT INTO sales(id, invoice_number, customer_id, ts, subtotal_cents, tax_cents, 
+                                  discount_cents, total_cents, payment_mode, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', datetime('now'))
             """;
 
             try (PreparedStatement ps = conn.prepareStatement(saleSql)) {
                 ps.setString(1, saleId);
-                ps.setString(2, customerId);
-                ps.setString(3, timestamp);
-                ps.setInt(4, subtotal);
-                ps.setInt(5, tax);
-                ps.setInt(6, discountCents);
-                ps.setInt(7, total);
-                ps.setString(8, paymentMode);
+                ps.setString(2, invoiceNumber);
+                ps.setString(3, customerId);
+                ps.setString(4, timestamp);
+                ps.setInt(5, subtotal);
+                ps.setInt(6, tax);
+                ps.setInt(7, discountCents);
+                ps.setInt(8, total);
+                ps.setString(9, paymentMode);
                 ps.executeUpdate();
             }
 
             // Insert sale items and update stock
             String itemSql = """
-                INSERT INTO sale_items(id, sale_id, product_id, qty, sell_price_cents, 
-                                       tax_percent, line_total_cents)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sale_items(id, sale_id, product_id, product_name, product_variant, 
+                                       qty, unit_price_cents, tax_percent, line_total_cents)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
             try (PreparedStatement ps = conn.prepareStatement(itemSql)) {
@@ -65,10 +68,12 @@ public class SalesDAO {
                     ps.setString(1, UUID.randomUUID().toString());
                     ps.setString(2, saleId);
                     ps.setString(3, item.getProduct().getId());
-                    ps.setInt(4, item.getQuantity());
-                    ps.setInt(5, item.getProduct().getSellPriceCents());
-                    ps.setInt(6, item.getProduct().getGstPercent());
-                    ps.setInt(7, (int) (item.getLineTotal() * 100));
+                    ps.setString(4, item.getProduct().getName());
+                    ps.setString(5, item.getProduct().getVariant() != null ? item.getProduct().getVariant() : "");
+                    ps.setInt(6, item.getQuantity());
+                    ps.setInt(7, item.getProduct().getSellPriceCents());
+                    ps.setInt(8, item.getProduct().getGstPercent());
+                    ps.setInt(9, (int) (item.getLineTotal() * 100));
                     ps.executeUpdate();
 
                     // Update stock
@@ -76,7 +81,7 @@ public class SalesDAO {
                 }
             }
 
-            // Award loyalty points (10 points per 1000 rupees)
+            // Award loyalty points (1 point per 100 rupees)
             if (customerId != null && !customerId.isEmpty()) {
                 int pointsEarned = (total / 100) / 100; // total in rupees / 100
                 if (pointsEarned > 0) {
@@ -89,9 +94,13 @@ public class SalesDAO {
 
         } catch (Exception e) {
             if (conn != null) {
-                conn.rollback();
+                try {
+                    conn.rollback();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
             }
-            throw new SQLException("Sale transaction failed", e);
+            throw new SQLException("Sale transaction failed: " + e.getMessage(), e);
         } finally {
             if (conn != null) {
                 conn.setAutoCommit(true);
