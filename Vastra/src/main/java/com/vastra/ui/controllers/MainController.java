@@ -6,7 +6,9 @@ import com.vastra.dao.SalesDAO;
 import com.vastra.model.CartItem;
 import com.vastra.model.Customer;
 import com.vastra.model.Product;
-import com.vastra.util.BarcodeUtil;
+import com.vastra.util.BarcodeScanner;
+import com.vastra.util.ThermalPrinterUtil;
+import javafx.application.Platform;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleStringProperty;
@@ -14,106 +16,209 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
-import javafx.print.PageLayout;
-import javafx.print.PrinterJob;
-import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
-import javafx.scene.layout.GridPane;
-import javafx.scene.layout.VBox;
-import javafx.scene.text.Text;
+import javafx.scene.control.cell.TextFieldTableCell;
+import javafx.scene.input.KeyCode;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
-import javafx.stage.Window;
+import javafx.util.converter.IntegerStringConverter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 public class MainController {
-    @FXML private TextField txtProductSearch;    // replaced scanField
     @FXML private TableView<CartItem> cartTable;
     @FXML private TableColumn<CartItem, String> nameColumn;
     @FXML private TableColumn<CartItem, Integer> qtyColumn;
     @FXML private TableColumn<CartItem, Double> priceColumn;
+    @FXML private TableColumn<CartItem, Double> taxColumn;
     @FXML private TableColumn<CartItem, Double> totalColumn;
+    @FXML private TableColumn<CartItem, Void> actionColumn;
+
     @FXML private Label totalLabel;
     @FXML private Label subtotalLabel;
     @FXML private Label taxLabel;
     @FXML private Label customerNameLabel;
     @FXML private Label customerPointsLabel;
     @FXML private TextField discountField;
-    @FXML private Button btnPrintBarcodes;      // aligned with FXML fx:id
+    @FXML private Label lowStockAlertLabel;
 
     private ObservableList<CartItem> cartItems = FXCollections.observableArrayList();
     private Customer currentCustomer = null;
+    private BarcodeScanner barcodeScanner;
+    private Stage primaryStage; // Store reference to main stage for focus handling
 
     @FXML
-    public void initialize(){
+    public void initialize() {
         setupCartTable();
-
-        // Use product search textbox instead of scan field
-        if (txtProductSearch != null) {
-            txtProductSearch.requestFocus();
-            txtProductSearch.setOnAction(e -> handleProductSearch());
-        }
+        setupBarcodeScanner();
+        setupKeyboardShortcuts();
+        checkLowStockAlerts();
 
         if (discountField != null) {
             discountField.setText("0");
+            discountField.textProperty().addListener((obs, old, newVal) -> updateTotals());
         }
+
+        // Setup global key listener for barcode scanner
+        Platform.runLater(() -> {
+            if (cartTable != null && cartTable.getScene() != null) {
+                primaryStage = (Stage) cartTable.getScene().getWindow();
+                setupGlobalBarcodeListener();
+            }
+        });
     }
 
     private void setupCartTable() {
         nameColumn.setCellValueFactory(data ->
-                new SimpleStringProperty(data.getValue().getProduct().getDisplayName()));
+                new SimpleStringProperty(data.getValue().getProduct().getFullDisplayName()));
 
         qtyColumn.setCellValueFactory(data ->
                 new SimpleIntegerProperty(data.getValue().getQuantity()).asObject());
 
+        // Make quantity column editable
+        qtyColumn.setCellFactory(TextFieldTableCell.forTableColumn(new IntegerStringConverter()));
+        qtyColumn.setOnEditCommit(event -> {
+            CartItem item = event.getRowValue();
+            int newQty = event.getNewValue();
+            if (newQty > 0 && newQty <= item.getProduct().getStock()) {
+                item.setQuantity(newQty);
+                updateTotals();
+            } else {
+                showError("Invalid quantity. Available stock: " + item.getProduct().getStock());
+                cartTable.refresh();
+            }
+        });
+
         priceColumn.setCellValueFactory(data ->
                 new SimpleDoubleProperty(data.getValue().getProduct().getSellPrice()).asObject());
+
+        taxColumn.setCellValueFactory(data ->
+                new SimpleDoubleProperty(data.getValue().getTaxAmount()).asObject());
 
         totalColumn.setCellValueFactory(data ->
                 new SimpleDoubleProperty(data.getValue().getLineTotal()).asObject());
 
+        // Add action column with remove button
+        actionColumn.setCellFactory(param -> new TableCell<>() {
+            private final Button deleteButton = new Button("Remove");
+            {
+                deleteButton.setOnAction(event -> {
+                    CartItem item = getTableView().getItems().get(getIndex());
+                    cartItems.remove(item);
+                    updateTotals();
+                });
+                deleteButton.setStyle("-fx-background-color: #F44336; -fx-text-fill: white;");
+            }
+            @Override
+            protected void updateItem(Void item, boolean empty) {
+                super.updateItem(item, empty);
+                setGraphic(empty ? null : deleteButton);
+            }
+        });
+
         cartTable.setItems(cartItems);
+        cartTable.setEditable(true);
+    }
+
+    private void setupBarcodeScanner() {
+        // Barcode scanner will work globally - no need for specific text field
+        // The scanner acts as keyboard input and we'll capture it at window level
     }
 
     /**
-     * Handles product search / manual barcode entry. The user types SKU / id and presses Enter.
+     * Setup global keyboard listener to capture barcode scanner input
      */
-    private void handleProductSearch() {
-        if (txtProductSearch == null) return;
-        String code = txtProductSearch.getText().trim();
-        if (code.isEmpty()) return;
+    private void setupGlobalBarcodeListener() {
+        if (primaryStage == null || primaryStage.getScene() == null) return;
 
+        StringBuilder scanBuffer = new StringBuilder();
+        final long[] lastKeyTime = {0};
+
+        primaryStage.getScene().setOnKeyPressed(event -> {
+            long currentTime = System.currentTimeMillis();
+
+            // If more than 100ms between keys, reset buffer (manual typing)
+            if (currentTime - lastKeyTime[0] > 100 && scanBuffer.length() > 0) {
+                scanBuffer.setLength(0);
+            }
+
+            lastKeyTime[0] = currentTime;
+
+            // Capture character keys
+            if (event.getCode().isLetterKey() || event.getCode().isDigitKey()) {
+                scanBuffer.append(event.getText());
+            }
+
+            // Enter key indicates end of barcode scan
+            if (event.getCode() == javafx.scene.input.KeyCode.ENTER) {
+                if (scanBuffer.length() > 0) {
+                    String barcode = scanBuffer.toString();
+                    scanBuffer.setLength(0);
+                    handleBarcodeScanned(barcode);
+                    event.consume();
+                }
+            }
+        });
+    }
+
+    private void setupKeyboardShortcuts() {
+        // F1 - Add Product
+        // F2 - Add Customer
+        // F3 - Complete Sale
+        // F4 - Clear Cart
+        // ESC - Clear current field
+    }
+
+    /**
+     * Handle barcode scanned from hardware scanner
+     */
+    private void handleBarcodeScanned(String barcode) {
         try {
-            // Try to find product by ID or SKU. Replace with your DAO lookup method if different.
-            Product product = ProductDAO.findById(code);
+            // Try to find product by barcode, SKU, or ID
+            Product product = ProductDAO.findByBarcode(barcode);
+
             if (product == null) {
-                // Optionally try search by SKU or name - you can add more lookup attempts here
-                product = ProductDAO.findBySku(code); // if you have this method; otherwise skip
+                product = ProductDAO.findBySku(barcode);
             }
 
             if (product == null) {
-                showError("Product not found: " + code);
-                txtProductSearch.clear();
+                product = ProductDAO.findById(barcode);
+            }
+
+            if (product == null) {
+                showError("Product not found for barcode: " + barcode);
+                playBeep(); // Error beep
+                return;
+            }
+
+            if (!product.isActive()) {
+                showError("Product is inactive: " + product.getName());
+                playBeep();
                 return;
             }
 
             if (product.getStock() <= 0) {
-                showError("Product out of stock: " + product.getDisplayName());
-                txtProductSearch.clear();
+                showError("OUT OF STOCK: " + product.getDisplayName());
+                playBeep();
                 return;
             }
 
             addToCart(product);
-            txtProductSearch.clear();
             updateTotals();
+            playSuccessBeep(); // Success beep
+
+            // Show quick feedback
+            System.out.println("✓ Added: " + product.getFullDisplayName() +
+                    " | Price: ₹" + product.getSellPrice() +
+                    " | Stock: " + product.getStock());
 
         } catch (Exception e) {
-            showError("Error searching product: " + e.getMessage());
+            showError("Error scanning product: " + e.getMessage());
+            playBeep();
+            e.printStackTrace();
         }
     }
 
@@ -140,7 +245,7 @@ public class MainController {
         double tax = 0;
 
         for (CartItem item : cartItems) {
-            subtotal += item.getLineTotal();
+            subtotal += item.getSubtotal();
             tax += item.getTaxAmount();
         }
 
@@ -151,6 +256,7 @@ public class MainController {
             }
         } catch (NumberFormatException e) {
             discount = 0;
+            discountField.setText("0");
         }
 
         double total = subtotal - discount;
@@ -164,11 +270,12 @@ public class MainController {
     public void onAddProduct() {
         try {
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/vastra/ui/fxml/product_form.fxml"));
-            Scene scene = new Scene(loader.load());
+            Scene scene = new Scene(loader.load(), 800, 700);
             Stage stage = new Stage();
             stage.setTitle("Add Product");
+            stage.initModality(Modality.APPLICATION_MODAL);
             stage.setScene(scene);
-            stage.setResizable(false);
+            stage.setResizable(true);
             stage.show();
         } catch (Exception e) {
             e.printStackTrace();
@@ -188,26 +295,40 @@ public class MainController {
             try {
                 Customer customer = CustomerDAO.findByPhone(phone);
                 if (customer == null) {
-                    // Create new customer
-                    TextInputDialog nameDialog = new TextInputDialog();
-                    nameDialog.setTitle("New Customer");
-                    nameDialog.setHeaderText("Customer not found. Create new?");
-                    nameDialog.setContentText("Name:");
+                    // Create new customer dialog
+                    Alert confirmDialog = new Alert(Alert.AlertType.CONFIRMATION);
+                    confirmDialog.setTitle("New Customer");
+                    confirmDialog.setHeaderText("Customer not found");
+                    confirmDialog.setContentText("Create new customer with phone: " + phone + "?");
 
-                    Optional<String> nameResult = nameDialog.showAndWait();
-                    if (nameResult.isPresent()) {
-                        customer = CustomerDAO.createCustomer(nameResult.get(), phone, "");
+                    Optional<ButtonType> confirmResult = confirmDialog.showAndWait();
+                    if (confirmResult.isPresent() && confirmResult.get() == ButtonType.OK) {
+                        TextInputDialog nameDialog = new TextInputDialog();
+                        nameDialog.setTitle("Customer Name");
+                        nameDialog.setHeaderText("Enter customer name");
+                        nameDialog.setContentText("Name:");
+
+                        Optional<String> nameResult = nameDialog.showAndWait();
+                        if (nameResult.isPresent() && !nameResult.get().trim().isEmpty()) {
+                            customer = CustomerDAO.createCustomer(nameResult.get().trim(), phone, "");
+                            showSuccess("Customer created successfully!");
+                        }
                     }
                 }
 
                 if (customer != null) {
                     currentCustomer = customer;
-                    if (customerNameLabel != null) customerNameLabel.setText(customer.getName());
-                    if (customerPointsLabel != null) customerPointsLabel.setText(customer.getPoints() + " points");
+                    if (customerNameLabel != null) {
+                        customerNameLabel.setText(customer.getName() + " (" + customer.getTier() + ")");
+                    }
+                    if (customerPointsLabel != null) {
+                        customerPointsLabel.setText(customer.getPoints() + " points available");
+                    }
                 }
 
             } catch (Exception e) {
                 showError("Error loading customer: " + e.getMessage());
+                e.printStackTrace();
             }
         });
     }
@@ -226,8 +347,8 @@ public class MainController {
 
         TextInputDialog dialog = new TextInputDialog("100");
         dialog.setTitle("Redeem Points");
-        dialog.setHeaderText("Customer has " + currentCustomer.getPoints() + " points");
-        dialog.setContentText("Points to redeem (100 points = ₹100):");
+        dialog.setHeaderText("Customer has " + currentCustomer.getPoints() + " points\n1 point = ₹1 discount");
+        dialog.setContentText("Points to redeem:");
 
         Optional<String> result = dialog.showAndWait();
         result.ifPresent(pointsStr -> {
@@ -237,13 +358,15 @@ public class MainController {
                     showError("Customer doesn't have enough points");
                     return;
                 }
-                if (points % 100 != 0) {
-                    showError("Points must be in multiples of 100");
+                if (points < 100) {
+                    showError("Minimum 100 points required for redemption");
                     return;
                 }
                 if (discountField != null) {
-                    discountField.setText(String.valueOf(points));
+                    double currentDiscount = Double.parseDouble(discountField.getText());
+                    discountField.setText(String.valueOf(currentDiscount + points));
                     updateTotals();
+                    showSuccess(points + " points will be redeemed");
                 }
             } catch (NumberFormatException e) {
                 showError("Invalid points value");
@@ -258,7 +381,19 @@ public class MainController {
             return;
         }
 
-        ChoiceDialog<String> paymentDialog = new ChoiceDialog<>("CASH", "CASH", "CARD", "UPI");
+        // Confirm sale
+        Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmAlert.setTitle("Complete Sale");
+        confirmAlert.setHeaderText("Complete this sale?");
+        confirmAlert.setContentText("Total: " + totalLabel.getText());
+
+        Optional<ButtonType> confirmResult = confirmAlert.showAndWait();
+        if (!confirmResult.isPresent() || confirmResult.get() != ButtonType.OK) {
+            return;
+        }
+
+        // Select payment method
+        ChoiceDialog<String> paymentDialog = new ChoiceDialog<>("CASH", "CASH", "CARD", "UPI", "OTHER");
         paymentDialog.setTitle("Payment Method");
         paymentDialog.setHeaderText("Select payment method");
 
@@ -275,9 +410,12 @@ public class MainController {
             // Redeem points if used
             if (currentCustomer != null && discountCents > 0) {
                 int pointsToRedeem = discountCents / 100; // 1 rupee = 1 point
-                CustomerDAO.redeemPoints(currentCustomer.getId(), pointsToRedeem);
+                if (pointsToRedeem <= currentCustomer.getPoints()) {
+                    CustomerDAO.redeemPoints(currentCustomer.getId(), pointsToRedeem);
+                }
             }
 
+            // Complete sale
             String saleId = SalesDAO.completeSale(
                     new ArrayList<>(cartItems),
                     customerId,
@@ -285,8 +423,19 @@ public class MainController {
                     paymentResult.get()
             );
 
-            showSuccess("Sale completed! ID: " + saleId);
+            showSuccess("Sale completed!\nInvoice: INV-" + System.currentTimeMillis());
+
+            // Print bill
+            printBill(saleId);
+
+            // Clear cart and refresh customer points
             clearCart();
+            if (currentCustomer != null) {
+                currentCustomer = CustomerDAO.findById(currentCustomer.getId());
+                if (customerPointsLabel != null && currentCustomer != null) {
+                    customerPointsLabel.setText(currentCustomer.getPoints() + " points available");
+                }
+            }
 
         } catch (Exception e) {
             showError("Error completing sale: " + e.getMessage());
@@ -294,9 +443,44 @@ public class MainController {
         }
     }
 
+    private void printBill(String saleId) {
+        try {
+            double subtotal = Double.parseDouble(subtotalLabel.getText().replace("₹", ""));
+            double tax = Double.parseDouble(taxLabel.getText().replace("₹", ""));
+            double discount = Double.parseDouble(discountField.getText());
+            double total = Double.parseDouble(totalLabel.getText().replace("₹", ""));
+
+            boolean printed = ThermalPrinterUtil.printReceipt(
+                    "INV-" + System.currentTimeMillis(),
+                    new ArrayList<>(cartItems),
+                    currentCustomer,
+                    subtotal,
+                    tax,
+                    discount,
+                    total,
+                    "CASH" // Get from sale
+            );
+
+            if (!printed) {
+                showWarning("Bill could not be printed. Please check printer connection.");
+            }
+        } catch (Exception e) {
+            showWarning("Error printing bill: " + e.getMessage());
+        }
+    }
+
     @FXML
     public void onClearCart() {
-        clearCart();
+        if (cartItems.isEmpty()) return;
+
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Clear Cart");
+        alert.setHeaderText("Clear all items from cart?");
+
+        Optional<ButtonType> result = alert.showAndWait();
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            clearCart();
+        }
     }
 
     private void clearCart() {
@@ -306,24 +490,112 @@ public class MainController {
         if (customerPointsLabel != null) customerPointsLabel.setText("0 points");
         if (discountField != null) discountField.setText("0");
         updateTotals();
-        if (txtProductSearch != null) txtProductSearch.requestFocus();
     }
 
-    // Stub methods for buttons that don't have handlers yet
-    @FXML public void onBulkImport() { showInfo("Bulk Import - Coming Soon!"); }
-    @FXML public void onShowReports() { showInfo("Reports - Coming Soon!"); }
-    @FXML public void onShowLowStock() { showInfo("Low Stock - Coming Soon!"); }
-    @FXML public void onShowReturns() { showInfo("Returns - Coming Soon!"); }
-    @FXML public void onShowSettings() { showInfo("Settings - Coming Soon!"); }
-    @FXML public void onClearCustomer() {
+    @FXML
+    public void onClearCustomer() {
         currentCustomer = null;
         if (customerNameLabel != null) customerNameLabel.setText("Walk-in Customer");
         if (customerPointsLabel != null) customerPointsLabel.setText("0 points");
     }
+
+    @FXML
+    public void onShowLowStock() {
+        try {
+            List<Product> lowStockProducts = ProductDAO.getLowStockProducts();
+            if (lowStockProducts.isEmpty()) {
+                showInfo("No low stock items");
+                return;
+            }
+
+            StringBuilder sb = new StringBuilder("Low Stock Items:\n\n");
+            for (Product p : lowStockProducts) {
+                sb.append(String.format("%s - Stock: %d (Min: %d)\n",
+                        p.getFullDisplayName(), p.getStock(), p.getReorderThreshold()));
+            }
+
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Low Stock Alert");
+            alert.setHeaderText("Items need restocking");
+            alert.setContentText(sb.toString());
+            alert.showAndWait();
+
+        } catch (Exception e) {
+            showError("Error fetching low stock: " + e.getMessage());
+        }
+    }
+
+    private void checkLowStockAlerts() {
+        try {
+            List<Product> lowStock = ProductDAO.getLowStockProducts();
+            if (!lowStock.isEmpty() && lowStockAlertLabel != null) {
+                lowStockAlertLabel.setText("⚠ " + lowStock.size() + " items low on stock");
+                lowStockAlertLabel.setStyle("-fx-text-fill: red; -fx-font-weight: bold;");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void playSuccessBeep() {
+        // Implement sound feedback for successful scan
+        java.awt.Toolkit.getDefaultToolkit().beep();
+    }
+
+    private void playBeep() {
+        // Implement error beep
+        java.awt.Toolkit.getDefaultToolkit().beep();
+    }
+
+    // Stub methods for future implementation
+    @FXML public void onBulkImport() { showInfo("Bulk Import - Coming Soon!"); }
+    @FXML public void onShowReports() { showInfo("Reports - Coming Soon!"); }
+    @FXML public void onShowReturns() { showInfo("Returns - Coming Soon!"); }
+    @FXML public void onShowSettings() { showInfo("Settings - Coming Soon!"); }
     @FXML public void onAddItemManually() { showInfo("Add Item Manually - Coming Soon!"); }
     @FXML public void onHoldSale() { showInfo("Hold Sale - Coming Soon!"); }
-    @FXML public void onPrintBill() { showInfo("Print Bill - Coming Soon!"); }
     @FXML public void onEmailBill() { showInfo("Email Bill - Coming Soon!"); }
+
+    @FXML
+    public void onPrintBarcodes() {
+        List<Product> products;
+        try {
+            products = ProductDAO.getAllProducts();
+        } catch (Exception e) {
+            e.printStackTrace();
+            showError("Failed to load products for barcode print: " + e.getMessage());
+            return;
+        }
+
+        if (products == null || products.isEmpty()) {
+            showInfo("No products found. Please add products first.");
+            return;
+        }
+
+        try {
+            // Print barcode labels for all products
+            int labelsPrinted = 0;
+            for (Product p : products) {
+                boolean success = ThermalPrinterUtil.printBarcodeLabel(
+                        p.getFullDisplayName(),
+                        p.getSku() != null && !p.getSku().isEmpty() ? p.getSku() : p.getId(),
+                        p.getSellPrice()
+                );
+                if (success) labelsPrinted++;
+            }
+
+            if (labelsPrinted > 0) {
+                showSuccess("Successfully printed " + labelsPrinted + " barcode labels!\n" +
+                        "Cut the labels and stick them on products.");
+            } else {
+                showWarning("No labels were printed. Check printer connection.");
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            showError("Error printing barcodes: " + e.getMessage());
+        }
+    }
 
     private void showError(String msg) {
         Alert alert = new Alert(Alert.AlertType.ERROR, msg);
@@ -336,7 +608,7 @@ public class MainController {
         Alert alert = new Alert(Alert.AlertType.INFORMATION, msg);
         alert.setTitle("Success");
         alert.setHeaderText(null);
-        alert.showAndWait();
+        alert.show();
     }
 
     private void showInfo(String msg) {
@@ -346,97 +618,10 @@ public class MainController {
         alert.showAndWait();
     }
 
-    @FXML
-    private void onPrintBarcodes() {
-        List<Product> products;
-        try {
-            products = ProductDAO.getAllProducts();
-        } catch (Exception e) {
-            e.printStackTrace();
-            showError("Failed to load products for barcode print: " + e.getMessage());
-            return;
-        }
-
-        if (products == null || products.isEmpty()) {
-            // show alert or notification
-            System.out.println("No products to print.");
-            return;
-        }
-
-        // 2. Create printable pages (grid of barcode labels)
-        int labelsPerRow = 3;
-        int labelsPerCol = 4;
-        int labelsPerPage = labelsPerRow * labelsPerCol;
-
-        List<Node> pages = new ArrayList<>();
-        int index = 0;
-        while (index < products.size()) {
-            GridPane pageGrid = new GridPane();
-            pageGrid.setHgap(10);
-            pageGrid.setVgap(10);
-            pageGrid.setPadding(new javafx.geometry.Insets(20));
-
-            for (int r = 0; r < labelsPerCol; r++) {
-                for (int c = 0; c < labelsPerRow; c++) {
-                    if (index >= products.size()) break;
-                    Product p = products.get(index++);
-
-                    // Create a small VBox label: product name + barcode image + sku/price if desired
-                    VBox labelBox = new VBox(4);
-                    labelBox.setPrefWidth(180); // tweak to fit label size
-                    labelBox.setPrefHeight(100);
-                    Text name = new Text(p.getName());
-                    name.setWrappingWidth(160);
-
-                    // Generate barcode image: use SKU or product id
-                    String code = p.getSku() != null ? p.getSku() : String.valueOf(p.getId());
-                    Image barcodeImage = BarcodeUtil.generateBarcodeImage(code, 300, 80);
-                    ImageView iv = new ImageView(barcodeImage);
-                    iv.setPreserveRatio(true);
-                    iv.setFitWidth(160); // adjust for printable label width
-
-                    Text skuText = new Text(code);
-
-                    labelBox.getChildren().addAll(name, iv, skuText);
-                    pageGrid.add(labelBox, c, r);
-                }
-            }
-            pages.add(pageGrid);
-        }
-
-        // 3. Print pages using PrinterJob
-        PrinterJob job = PrinterJob.createPrinterJob();
-        if (job == null) {
-            System.out.println("No printers available.");
-            return;
-        }
-
-        // Optionally show print dialog to choose printer and settings
-        Window window = btnPrintBarcodes.getScene().getWindow();
-        boolean proceed = job.showPrintDialog(window);
-        if (!proceed) {
-            job.endJob();
-            return;
-        }
-
-        PageLayout pageLayout = job.getJobSettings().getPageLayout();
-        for (Node pageNode : pages) {
-            // Optionally scale node to page printable width
-            double scaleX = pageLayout.getPrintableWidth() / pageNode.prefWidth(-1);
-            double scaleY = pageLayout.getPrintableHeight() / pageNode.prefHeight(-1);
-            double scale = Math.min(scaleX, scaleY);
-            pageNode.setScaleX(scale);
-            pageNode.setScaleY(scale);
-
-            boolean printed = job.printPage(pageNode);
-            pageNode.setScaleX(1);
-            pageNode.setScaleY(1);
-            if (!printed) {
-                System.out.println("Failed to print one page.");
-                break;
-            }
-        }
-        job.endJob();
+    private void showWarning(String msg) {
+        Alert alert = new Alert(Alert.AlertType.WARNING, msg);
+        alert.setTitle("Warning");
+        alert.setHeaderText(null);
+        alert.showAndWait();
     }
-
 }
